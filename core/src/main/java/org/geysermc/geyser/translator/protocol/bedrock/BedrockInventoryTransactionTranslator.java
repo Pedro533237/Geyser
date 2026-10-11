@@ -662,7 +662,7 @@ public class BedrockInventoryTransactionTranslator extends PacketTranslator<Inve
     private float fixCursorValue(float value) {
         if (value <= -0.5f) {
             return -0.25f;
-        } else if (value >= 2.0f) {
+        } else if (value > 1.5f) {
             return 1.25f;
         } else {
             return value;
