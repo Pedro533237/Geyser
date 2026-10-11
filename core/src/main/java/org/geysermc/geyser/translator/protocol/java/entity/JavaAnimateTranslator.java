@@ -76,7 +76,10 @@ public class JavaAnimateTranslator extends PacketTranslator<ClientboundAnimatePa
             case WAKE_UP -> {
                 // Technically the client does a bunch more here, like figuring out the correct bed position
                 // However, we only adjust the pose - that way we stop applying the sleeping offset for the player position
-                session.getPlayerEntity().setPose(Pose.STANDING);
+                // This animation is also sent for other players; do not wake the local player for their animation.
+                if (entity == session.getPlayerEntity()) {
+                    session.getPlayerEntity().setPose(Pose.STANDING);
+                }
                 animatePacket.setAction(AnimatePacket.Action.WAKE_UP);
             }
             default -> {
