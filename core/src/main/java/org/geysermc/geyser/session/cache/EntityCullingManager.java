@@ -22,6 +22,7 @@
 
 package org.geysermc.geyser.session.cache;
 
+import it.unimi.dsi.fastutil.ints.Int2ByteOpenHashMap;
 import org.cloudburstmc.math.vector.Vector3f;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.LivingEntity;
@@ -46,11 +47,13 @@ public final class EntityCullingManager {
     private static final float[] TARGET_HEIGHT_FRACTIONS = {0.15f, 0.5f, 0.85f};
 
     private final GeyserSession session;
+    private final Int2ByteOpenHashMap opaqueBlockCache = new Int2ByteOpenHashMap();
     private int ticksUntilUpdate;
     private boolean wasEnabled;
 
     public EntityCullingManager(GeyserSession session) {
         this.session = session;
+        opaqueBlockCache.defaultReturnValue((byte) -1);
     }
 
     public void tick() {
@@ -162,7 +165,18 @@ public final class EntityCullingManager {
         return false;
     }
 
-    private static boolean isOpaqueFullBlock(int javaBlockStateId) {
+    private boolean isOpaqueFullBlock(int javaBlockStateId) {
+        byte cached = opaqueBlockCache.get(javaBlockStateId);
+        if (cached != -1) {
+            return cached == 1;
+        }
+
+        boolean opaque = calculateOpaqueFullBlock(javaBlockStateId);
+        opaqueBlockCache.put(javaBlockStateId, (byte) (opaque ? 1 : 0));
+        return opaque;
+    }
+
+    private static boolean calculateOpaqueFullBlock(int javaBlockStateId) {
         if (javaBlockStateId == Block.JAVA_AIR_ID) {
             return false;
         }
