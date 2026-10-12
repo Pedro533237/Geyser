@@ -187,6 +187,12 @@ public final class EntityCullingManager {
         double dy = end.getY() - startY;
         double dz = end.getZ() - startZ;
 
+        // Invalid entity coordinates must never produce an occlusion result.
+        if (!Double.isFinite(startX) || !Double.isFinite(startY) || !Double.isFinite(startZ)
+            || !Double.isFinite(dx) || !Double.isFinite(dy) || !Double.isFinite(dz)) {
+            return false;
+        }
+
         int x = (int) Math.floor(startX);
         int y = (int) Math.floor(startY);
         int z = (int) Math.floor(startZ);
@@ -195,9 +201,10 @@ public final class EntityCullingManager {
         int endY = (int) Math.floor(end.getY());
         int endZ = (int) Math.floor(end.getZ());
 
-        int stepX = Double.compare(dx, 0.0);
-        int stepY = Double.compare(dy, 0.0);
-        int stepZ = Double.compare(dz, 0.0);
+        // Comparisons deliberately treat both +0.0 and -0.0 as no movement.
+        int stepX = dx > 0.0 ? 1 : dx < 0.0 ? -1 : 0;
+        int stepY = dy > 0.0 ? 1 : dy < 0.0 ? -1 : 0;
+        int stepZ = dz > 0.0 ? 1 : dz < 0.0 ? -1 : 0;
 
         double deltaX = stepX == 0
             ? Double.POSITIVE_INFINITY : Math.abs(1.0 / dx);
