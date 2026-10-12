@@ -211,7 +211,13 @@ public class BedrockInventoryTransactionTranslator extends PacketTranslator<Inve
 
                         // Check to make sure the client isn't spamming interaction
                         // Based on Nukkit 1.0, with changes to ensure holding down still works
-                        boolean hasAlreadyClicked = System.currentTimeMillis() - session.getLastInteractionTime() < 110.0 &&
+                        // Bedrock can resend a top-face placement while rapidly towering before the server's
+                        // block update arrives. Let the Java server validate these placement attempts instead
+                        // of discarding them as duplicate interactions.
+                        boolean isTopFaceBlockPlacement = Direction.getUntrusted(packet, InventoryTransactionPacket::getBlockFace) == Direction.UP
+                                && session.getPlayerInventory().getItemInHand().asItem() instanceof BlockItem;
+                        boolean hasAlreadyClicked = !isTopFaceBlockPlacement
+                                && System.currentTimeMillis() - session.getLastInteractionTime() < 110.0 &&
                                 packetBlockPosition.distanceSquared(session.getLastInteractionBlockPosition()) < 0.00001 &&
                                 packet.getBlockFace() == session.getLastInteractionBlockFace();
                         session.setLastInteractionBlockPosition(packetBlockPosition);
