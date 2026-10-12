@@ -70,6 +70,14 @@ public class ChunkCache {
     }
 
     /**
+     * Checks whether the chunk containing the given block coordinates is currently cached.
+     * This does not query the world manager or load chunk data.
+     */
+    public boolean isChunkLoadedAt(int blockX, int blockZ) {
+        return cache && getChunk(blockX >> 4, blockZ >> 4) != null;
+    }
+
+    /**
      * Doesn't check for cache enabled, so don't use this without checking that first!
      */
     @Deprecated

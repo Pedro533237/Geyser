@@ -178,6 +178,8 @@ public class Entity implements GeyserEntity {
     @Getter(AccessLevel.NONE)
     @Setter(AccessLevel.PROTECTED) // For players
     private boolean flagsDirty = false;
+    /** Bedrock-only visual override; never mutates the Java entity flags. */
+    private boolean entityCullingInvisible;
 
     protected float scale = 1.0F;
     protected final @Nullable GeyserEntityPropertyManager propertyManager;
@@ -237,7 +239,7 @@ public class Entity implements GeyserEntity {
         addEntityPacket.setRotation(Vector2f.from(pitch, yaw));
         addEntityPacket.setHeadRotation(headYaw);
         addEntityPacket.setBodyRotation(yaw); // TODO: This should be bodyYaw
-        addEntityPacket.getMetadata().putFlags(flags);
+        addEntityPacket.getMetadata().putFlags(bedrockFlags(isFirstPersonSpectated()));
         metadata.apply(addEntityPacket.getMetadata());
         if (propertyManager != null) {
             propertyManager.applyIntProperties(addEntityPacket.getProperties().getIntProperties());
@@ -484,11 +486,7 @@ public class Entity implements GeyserEntity {
             entityDataPacket.setRuntimeEntityId(geyserId);
             if (flagsDirty) {
                 // Re-assert the first-person hide; a server flags-byte refresh would otherwise un-hide the target
-                if (session.getSpectatedEntity() == this && session.getSpectateMode() == EntitySpectateHelper.SpectateMode.FIRST_PERSON) {
-                    entityDataPacket.getMetadata().putFlags(spectateHiddenFlags());
-                } else {
-                    entityDataPacket.getMetadata().putFlags(flags);
-                }
+                entityDataPacket.getMetadata().putFlags(bedrockFlags(isFirstPersonSpectated()));
                 flagsDirty = false;
             }
             metadata.apply(entityDataPacket.getMetadata());
@@ -507,14 +505,41 @@ public class Entity implements GeyserEntity {
         }
         SetEntityDataPacket packet = new SetEntityDataPacket();
         packet.setRuntimeEntityId(geyserId);
-        packet.getMetadata().putFlags(hidden ? spectateHiddenFlags() : flags);
+        packet.getMetadata().putFlags(bedrockFlags(hidden));
         session.sendUpstreamPacket(packet);
     }
 
+    /** Applies invisibility to this Bedrock session without changing Java metadata. */
+    public void setEntityCullingInvisible(boolean invisible) {
+        if (entityCullingInvisible == invisible) {
+            return;
+        }
+        entityCullingInvisible = invisible;
+        if (!valid) {
+            return;
+        }
+
+        SetEntityDataPacket packet = new SetEntityDataPacket();
+        packet.setRuntimeEntityId(geyserId);
+        packet.getMetadata().putFlags(bedrockFlags(isFirstPersonSpectated()));
+        session.sendUpstreamPacket(packet);
+    }
+
+    private boolean isFirstPersonSpectated() {
+        return session.getSpectatedEntity() == this
+            && session.getSpectateMode() == EntitySpectateHelper.SpectateMode.FIRST_PERSON;
+    }
+
+    private EnumMap<EntityFlag, Boolean> bedrockFlags(boolean forceInvisible) {
+        EnumMap<EntityFlag, Boolean> bedrockFlags = new EnumMap<>(flags);
+        if (forceInvisible || entityCullingInvisible) {
+            bedrockFlags.put(EntityFlag.INVISIBLE, true);
+        }
+        return bedrockFlags;
+    }
+
     protected EnumMap<EntityFlag, Boolean> spectateHiddenFlags() {
-        EnumMap<EntityFlag, Boolean> overridden = new EnumMap<>(flags);
-        overridden.put(EntityFlag.INVISIBLE, true);
-        return overridden;
+        return bedrockFlags(true);
     }
 
     /**

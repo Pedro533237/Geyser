@@ -439,6 +439,15 @@ public interface GeyserConfig {
         boolean disableBedrockScaffolding();
 
         @Comment("""
+            Hides living entities from Bedrock clients when an opaque full block blocks the line of sight.
+            This only affects Bedrock visuals and does not change Java server entity logic or ticking.
+            Only already-cached chunks are checked; missing or modded block data is treated conservatively.
+            Visibility is estimated from the player's eye position; third-person or custom cameras may differ.
+            This experimental feature is disabled by default.""")
+        @DefaultBoolean(false)
+        boolean serverSideEntityCulling();
+
+        @Comment("""
             Bedrock prevents building and displaying blocks above Y127 in the Nether.
             This config option works around that by changing the Nether dimension ID to the End ID.
             The main downside to this is that the entire Nether will have the same red fog rather than having different fog for each biome.""")
