@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2019-2026 GeyserMC. http://geysermc.org
  *
@@ -13,11 +14,7 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  */
 
 package org.geysermc.geyser.session.cache;
@@ -36,18 +33,30 @@ import org.geysermc.geyser.translator.collision.BlockCollision;
 import org.geysermc.geyser.util.BlockUtils;
 
 /**
- * Applies a Bedrock-only visual invisibility override to living mobs occluded by opaque full blocks.
- * This deliberately does not remove entities from the cache or alter Java server state.
+ * Applies a Bedrock-only visual invisibility override to living entities
+ * occluded by opaque, full-cube blocks.
+ *
+ * Entities remain in the cache and Java server state is not modified.
  */
 public final class EntityCullingManager {
     private static final int UPDATE_INTERVAL_TICKS = 10;
+
     private static final double MIN_HORIZONTAL_DISTANCE_SQUARED = 4.0;
-    private static final double MAX_HORIZONTAL_DISTANCE_SQUARED = 24.0 * 24.0;
+    private static final double MAX_HORIZONTAL_DISTANCE_SQUARED = 576.0;
     private static final double FULL_BLOCK_EPSILON = 0.001;
-    private static final float[] TARGET_HEIGHT_FRACTIONS = {0.15f, 0.5f, 0.85f};
+
+    private static final float[] TARGET_HEIGHT_FRACTIONS = {
+        0.15f, 0.5f, 0.85f
+    };
 
     private final GeyserSession session;
-    private final Int2ByteOpenHashMap opaqueBlockCache = new Int2ByteOpenHashMap();
+
+    /**
+     * Values: -1 = unknown, 0 = transparent, 1 = opaque full block.
+     */
+    private final Int2ByteOpenHashMap opaqueBlockCache =
+        new Int2ByteOpenHashMap();
+
     private int ticksUntilUpdate;
     private boolean wasEnabled;
 
@@ -60,12 +69,14 @@ public final class EntityCullingManager {
         if (!session.getGeyser().config().gameplay().serverSideEntityCulling()) {
             if (wasEnabled) {
                 resetCulledEntities();
-                wasEnabled = false;
             }
+            wasEnabled = false;
             return;
         }
 
-        if (!session.isSpawned() || !session.getChunkCache().isCache() || session.getSpectatedEntity() != null) {
+        if (!session.isSpawned()
+            || !session.getChunkCache().isCache()
+            || session.getSpectatedEntity() != null) {
             if (wasEnabled) {
                 resetCulledEntities();
             }
@@ -74,25 +85,35 @@ public final class EntityCullingManager {
         }
 
         wasEnabled = true;
+
         if (++ticksUntilUpdate < UPDATE_INTERVAL_TICKS) {
             return;
         }
         ticksUntilUpdate = 0;
 
         Vector3f playerPosition = session.getPlayerEntity().position();
-        float playerEyeHeight = session.getPlayerEntity().getJavaDefinition().height() * 0.85f;
+        float eyeHeight =
+            session.getPlayerEntity().getJavaDefinition().height() * 0.85f;
+
         Vector3f eyePosition = Vector3f.from(
             playerPosition.getX(),
-            playerPosition.getY() + playerEyeHeight,
+            playerPosition.getY() + eyeHeight,
             playerPosition.getZ()
         );
 
-        for (Entity entity : session.getEntityCache().getEntitiesUnsafe().values()) {
+        ChunkCache chunkCache = session.getChunkCache();
+
+        for (Entity entity :
+            session.getEntityCache().getEntitiesUnsafe().values()) {
+
             if (!isEligible(entity)) {
                 entity.setEntityCullingInvisible(false);
                 continue;
             }
-            entity.setEntityCullingInvisible(isOccluded(eyePosition, entity));
+
+            entity.setEntityCullingInvisible(
+                isOccluded(eyePosition, entity, chunkCache)
+            );
         }
     }
 
@@ -103,76 +124,165 @@ public final class EntityCullingManager {
             && !(entity instanceof ArmorStandEntity)
             && entity.getVehicle() == null
             && entity.passengers().isEmpty()
-            && !entity.getFlag(org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag.INVISIBLE);
+            && !entity.getFlag(
+                org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag.INVISIBLE
+            );
     }
 
-    private boolean isOccluded(Vector3f eyePosition, Entity entity) {
+    private boolean isOccluded(
+        Vector3f eyePosition,
+        Entity entity,
+        ChunkCache chunkCache
+    ) {
         Vector3f position = entity.position();
+
         double dx = position.getX() - eyePosition.getX();
-        double dy = position.getY() - eyePosition.getY();
         double dz = position.getZ() - eyePosition.getZ();
+
         double horizontalDistanceSquared = dx * dx + dz * dz;
+
+        // Cheap rejection before performing any ray traversal.
         if (horizontalDistanceSquared < MIN_HORIZONTAL_DISTANCE_SQUARED
             || horizontalDistanceSquared > MAX_HORIZONTAL_DISTANCE_SQUARED) {
             return false;
         }
 
-        float height = Math.max(0.25f, entity.getJavaDefinition().height());
+        float height = Math.max(
+            0.25f,
+            entity.getJavaDefinition().height()
+        );
+
         for (float fraction : TARGET_HEIGHT_FRACTIONS) {
             Vector3f target = Vector3f.from(
                 position.getX(),
                 position.getY() + height * fraction,
                 position.getZ()
             );
-            if (!rayIsBlocked(eyePosition, target)) {
-                // Any unobstructed body point keeps the entity visible.
+
+            if (!rayIsBlocked(eyePosition, target, chunkCache)) {
+                // One visible body point is enough to keep the entity visible.
                 return false;
             }
         }
+
         return true;
     }
 
-    private boolean rayIsBlocked(Vector3f start, Vector3f end) {
-        double dx = end.getX() - start.getX();
-        double dy = end.getY() - start.getY();
-        double dz = end.getZ() - start.getZ();
-        int samples = Math.max(1, (int) Math.ceil(Math.max(Math.max(Math.abs(dx), Math.abs(dy)), Math.abs(dz)) * 2));
+    /**
+     * Traverses voxels crossed by a ray using a 3D DDA algorithm.
+     *
+     * Missing chunks are always treated as unobstructed.
+     * The target voxel is excluded because it contains the target entity.
+     */
+    private boolean rayIsBlocked(
+        Vector3f start,
+        Vector3f end,
+        ChunkCache chunkCache
+    ) {
+        double startX = start.getX();
+        double startY = start.getY();
+        double startZ = start.getZ();
 
-        int lastX = (int) Math.floor(start.getX());
-        int lastY = (int) Math.floor(start.getY());
-        int lastZ = (int) Math.floor(start.getZ());
-        for (int step = 1; step < samples; step++) {
-            double progress = (double) step / samples;
-            int blockX = (int) Math.floor(start.getX() + dx * progress);
-            int blockY = (int) Math.floor(start.getY() + dy * progress);
-            int blockZ = (int) Math.floor(start.getZ() + dz * progress);
-            if (blockX == lastX && blockY == lastY && blockZ == lastZ) {
-                continue;
-            }
-            lastX = blockX;
-            lastY = blockY;
-            lastZ = blockZ;
+        double dx = end.getX() - startX;
+        double dy = end.getY() - startY;
+        double dz = end.getZ() - startZ;
 
-            ChunkCache chunkCache = session.getChunkCache();
-            if (!chunkCache.isChunkLoadedAt(blockX, blockZ)) {
-                // Missing data must never be treated as an occluder.
+        int x = (int) Math.floor(startX);
+        int y = (int) Math.floor(startY);
+        int z = (int) Math.floor(startZ);
+
+        int endX = (int) Math.floor(end.getX());
+        int endY = (int) Math.floor(end.getY());
+        int endZ = (int) Math.floor(end.getZ());
+
+        int stepX = Double.compare(dx, 0.0);
+        int stepY = Double.compare(dy, 0.0);
+        int stepZ = Double.compare(dz, 0.0);
+
+        double deltaX = stepX == 0
+            ? Double.POSITIVE_INFINITY : Math.abs(1.0 / dx);
+        double deltaY = stepY == 0
+            ? Double.POSITIVE_INFINITY : Math.abs(1.0 / dy);
+        double deltaZ = stepZ == 0
+            ? Double.POSITIVE_INFINITY : Math.abs(1.0 / dz);
+
+        double maxX = initialBoundaryTime(startX, x, dx, stepX);
+        double maxY = initialBoundaryTime(startY, y, dy, stepY);
+        double maxZ = initialBoundaryTime(startZ, z, dz, stepZ);
+
+        // Each iteration crosses at least one voxel boundary.
+        // The bound also protects against unexpected numerical problems.
+        int maxSteps = Math.abs(endX - x)
+            + Math.abs(endY - y)
+            + Math.abs(endZ - z) + 3;
+
+        for (int i = 0; i < maxSteps; i++) {
+            if (x == endX && y == endY && z == endZ) {
                 return false;
             }
-            if (isOpaqueFullBlock(chunkCache.getBlockAt(blockX, blockY, blockZ))) {
+
+            // Advance every axis crossed at the same ray parameter.
+            double next = Math.min(maxX, Math.min(maxY, maxZ));
+
+            if (maxX == next) {
+                x += stepX;
+                maxX += deltaX;
+            }
+            if (maxY == next) {
+                y += stepY;
+                maxY += deltaY;
+            }
+            if (maxZ == next) {
+                z += stepZ;
+                maxZ += deltaZ;
+            }
+
+            // Never use unavailable chunk data as an occluder.
+            if (!chunkCache.isChunkLoadedAt(x, z)) {
+                return false;
+            }
+
+            if (x == endX && y == endY && z == endZ) {
+                return false;
+            }
+
+            if (isOpaqueFullBlock(chunkCache.getBlockAt(x, y, z))) {
                 return true;
             }
         }
+
+        // Conservative fallback: numerical uncertainty means visible.
         return false;
+    }
+
+    private static double initialBoundaryTime(
+        double coordinate,
+        int block,
+        double direction,
+        int step
+    ) {
+        if (step == 0) {
+            return Double.POSITIVE_INFINITY;
+        }
+
+        double boundary = step > 0 ? block + 1.0 : block;
+        return (boundary - coordinate) / direction;
     }
 
     private boolean isOpaqueFullBlock(int javaBlockStateId) {
         byte cached = opaqueBlockCache.get(javaBlockStateId);
+
         if (cached != -1) {
             return cached == 1;
         }
 
         boolean opaque = calculateOpaqueFullBlock(javaBlockStateId);
-        opaqueBlockCache.put(javaBlockStateId, (byte) (opaque ? 1 : 0));
+
+        opaqueBlockCache.put(
+            javaBlockStateId,
+            (byte) (opaque ? 1 : 0)
+        );
+
         return opaque;
     }
 
@@ -183,21 +293,29 @@ public final class EntityCullingManager {
 
         BlockState state = BlockState.of(javaBlockStateId);
         String identifier = state.block().javaIdentifier().toString();
-        if (!identifier.startsWith("minecraft:") || isKnownTransparentBlock(identifier.substring("minecraft:".length()))) {
-            // Unknown/modded blocks are conservatively treated as transparent.
+
+        if (!identifier.startsWith("minecraft:")
+            || isKnownTransparentBlock(
+                identifier.substring("minecraft:".length())
+            )) {
+            // Unknown/modded blocks are handled conservatively.
             return false;
         }
 
         BlockCollision collision = BlockUtils.getCollision(javaBlockStateId);
+
         if (collision == null) {
             return false;
         }
+
         BoundingBox[] boxes = collision.getBoundingBoxes();
+
         if (boxes.length != 1) {
             return false;
         }
 
         BoundingBox box = boxes[0];
+
         return Math.abs(box.getMiddleX() - 0.5) < FULL_BLOCK_EPSILON
             && Math.abs(box.getMiddleY() - 0.5) < FULL_BLOCK_EPSILON
             && Math.abs(box.getMiddleZ() - 0.5) < FULL_BLOCK_EPSILON
@@ -221,9 +339,11 @@ public final class EntityCullingManager {
     }
 
     private void resetCulledEntities() {
-        for (Entity entity : session.getEntityCache().getEntitiesUnsafe().values()) {
+        for (Entity entity :
+            session.getEntityCache().getEntitiesUnsafe().values()) {
             entity.setEntityCullingInvisible(false);
         }
+
         ticksUntilUpdate = 0;
     }
 }
