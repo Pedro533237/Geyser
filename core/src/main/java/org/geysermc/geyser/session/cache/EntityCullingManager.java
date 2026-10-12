@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) 2019-2026 GeyserMC. http://geysermc.org
  *
@@ -44,6 +43,7 @@ public final class EntityCullingManager {
     private static final double MIN_HORIZONTAL_DISTANCE_SQUARED = 4.0;
     private static final double MAX_HORIZONTAL_DISTANCE_SQUARED = 576.0;
     private static final double FULL_BLOCK_EPSILON = 0.001;
+    private static final double RAY_TIE_EPSILON = 1.0E-10;
 
     private static final float[] TARGET_HEIGHT_FRACTIONS = {
         0.15f, 0.5f, 0.85f
@@ -221,18 +221,23 @@ public final class EntityCullingManager {
                 return false;
             }
 
-            // Advance every axis crossed at the same ray parameter.
+            // If the ray hits an edge/corner, the exact set of voxels touched
+            // is numerically ambiguous. Keep the entity visible rather than
+            // risk culling it because of a missed neighboring voxel.
             double next = Math.min(maxX, Math.min(maxY, maxZ));
+            if ((isSameRayTime(maxX, next)
+                    && (isSameRayTime(maxY, next) || isSameRayTime(maxZ, next)))
+                || (isSameRayTime(maxY, next) && isSameRayTime(maxZ, next))) {
+                return false;
+            }
 
-            if (maxX == next) {
+            if (isSameRayTime(maxX, next)) {
                 x += stepX;
                 maxX += deltaX;
-            }
-            if (maxY == next) {
+            } else if (isSameRayTime(maxY, next)) {
                 y += stepY;
                 maxY += deltaY;
-            }
-            if (maxZ == next) {
+            } else {
                 z += stepZ;
                 maxZ += deltaZ;
             }
@@ -253,6 +258,17 @@ public final class EntityCullingManager {
 
         // Conservative fallback: numerical uncertainty means visible.
         return false;
+    }
+
+    private static boolean isSameRayTime(double first, double second) {
+        if (first == second) {
+            return true;
+        }
+        if (!Double.isFinite(first) || !Double.isFinite(second)) {
+            return false;
+        }
+        return Math.abs(first - second)
+            <= RAY_TIE_EPSILON * Math.max(1.0, Math.max(Math.abs(first), Math.abs(second)));
     }
 
     private static double initialBoundaryTime(
