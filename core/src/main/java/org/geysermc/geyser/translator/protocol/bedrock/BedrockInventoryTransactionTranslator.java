@@ -211,20 +211,32 @@ public class BedrockInventoryTransactionTranslator extends PacketTranslator<Inve
 
                         // Check to make sure the client isn't spamming interaction
                         // Based on Nukkit 1.0, with changes to ensure holding down still works
-                        boolean hasAlreadyClicked = System.currentTimeMillis() - session.getLastInteractionTime() < 110.0 &&
+                        long interactionTime = System.currentTimeMillis();
+                        Vector3f interactionPlayerPosition = session.getPlayerEntity().position();
+                        boolean sameRapidInteraction = interactionTime - session.getLastInteractionTime() < 110.0 &&
                                 packetBlockPosition.distanceSquared(session.getLastInteractionBlockPosition()) < 0.00001 &&
                                 packet.getBlockFace() == session.getLastInteractionBlockFace();
-                        session.setLastInteractionBlockPosition(packetBlockPosition);
-                        session.setLastInteractionPlayerPosition(session.getPlayerEntity().position());
-                        session.setLastInteractionBlockFace(packet.getBlockFace());
+
+                        // While towering, Bedrock can repeat the same top-face click before it has received the
+                        // preceding block update. Do not treat that as a duplicate if the player has actually
+                        // moved upward and the intended placement position is still empty on the Java server.
+                        boolean isAdvancingTowerPlacement = sameRapidInteraction
+                                && Direction.getUntrusted(packet, InventoryTransactionPacket::getBlockFace) == Direction.UP
+                                && session.getPlayerInventory().getItemInHand().asItem() instanceof BlockItem
+                                && interactionPlayerPosition.getY() > session.getLastInteractionPlayerPosition().getY() + 0.1f
+                                && session.getGeyser().getWorldManager().blockAt(session, blockPos).is(Blocks.AIR);
+                        boolean hasAlreadyClicked = sameRapidInteraction && !isAdvancingTowerPlacement;
 
                         if (hasAlreadyClicked) {
                             session.getPlayerInventoryHolder().updateSlot(session.getPlayerInventory().getOffsetForHotbar(packet.getHotbarSlot()));
                             break;
-                        } else {
-                            // Only update the interaction time if it's valid - that way holding down still works.
-                            session.setLastInteractionTime(System.currentTimeMillis());
                         }
+
+                        session.setLastInteractionBlockPosition(packetBlockPosition);
+                        session.setLastInteractionPlayerPosition(interactionPlayerPosition);
+                        session.setLastInteractionBlockFace(packet.getBlockFace());
+                        // Only update the interaction time if it is not a duplicate - holding down still works.
+                        session.setLastInteractionTime(interactionTime);
 
                         if (isIncorrectHeldItem(session, packet)) {
                             BlockUtils.restoreCorrectBlock(session, blockPos, packet.getHotbarSlot());
