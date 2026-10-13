@@ -32,6 +32,7 @@ import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
@@ -436,6 +437,49 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      * Used for translating Bedrock block actions to Java entity actions.
      */
     private final Map<Vector3i, ItemFrameEntity> itemFrameCache = new Object2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<List<ItemFrameEntity>> itemFramesByChunk = new Long2ObjectOpenHashMap<>();
+
+    public void cacheItemFrame(Vector3i position, ItemFrameEntity itemFrame) {
+        ItemFrameEntity previous = itemFrameCache.put(position, itemFrame);
+        long chunkKey = MathUtils.chunkPositionToLong(position.getX() >> 4, position.getZ() >> 4);
+        if (previous != null) {
+            removeItemFrameFromChunkIndex(chunkKey, previous);
+        }
+
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(chunkKey);
+        if (frames == null) {
+            frames = new ArrayList<>();
+            itemFramesByChunk.put(chunkKey, frames);
+        }
+        frames.add(itemFrame);
+    }
+
+    public void uncacheItemFrame(Vector3i position, ItemFrameEntity itemFrame) {
+        if (itemFrameCache.remove(position, itemFrame)) {
+            long chunkKey = MathUtils.chunkPositionToLong(position.getX() >> 4, position.getZ() >> 4);
+            removeItemFrameFromChunkIndex(chunkKey, itemFrame);
+        }
+    }
+
+    private void removeItemFrameFromChunkIndex(long chunkKey, ItemFrameEntity itemFrame) {
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(chunkKey);
+        if (frames != null) {
+            frames.remove(itemFrame);
+            if (frames.isEmpty()) {
+                itemFramesByChunk.remove(chunkKey);
+            }
+        }
+    }
+
+    public Iterable<ItemFrameEntity> getItemFramesInChunk(int chunkX, int chunkZ) {
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(MathUtils.chunkPositionToLong(chunkX, chunkZ));
+        return frames == null ? Collections.emptyList() : frames;
+    }
+
+    public void clearItemFrameCache() {
+        itemFrameCache.clear();
+        itemFramesByChunk.clear();
+    }
 
     /**
      * A map of all players (and their heads) that are wearing a player head with a custom texture.
