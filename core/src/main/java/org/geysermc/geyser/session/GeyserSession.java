@@ -32,6 +32,7 @@ import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
@@ -177,6 +178,7 @@ import org.geysermc.geyser.session.cache.BundleCache;
 import org.geysermc.geyser.session.cache.ChunkCache;
 import org.geysermc.geyser.session.cache.ComponentCache;
 import org.geysermc.geyser.session.cache.EntityCache;
+import org.geysermc.geyser.session.cache.EntityCullingManager;
 import org.geysermc.geyser.session.cache.EntityEffectCache;
 import org.geysermc.geyser.session.cache.FormCache;
 import org.geysermc.geyser.session.cache.InputCache;
@@ -305,6 +307,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
     private final ChunkCache chunkCache;
     private final ComponentCache componentCache;
     private final EntityCache entityCache;
+    private final EntityCullingManager entityCullingManager;
     private final EntityEffectCache effectCache;
     private final FormCache formCache;
     private final GameRuleHandler gameRuleHandler;
@@ -327,6 +330,11 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
 
     @Setter
     private TeleportCache unconfirmedTeleport;
+
+    /**
+     * When a pending bed click stops holding movement back. See {@link #isEnteringBed()}.
+     */
+    private long enteringBedUntil;
 
     @Setter
     private @Nullable Entity spectatedEntity;
@@ -424,6 +432,49 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      * Used for translating Bedrock block actions to Java entity actions.
      */
     private final Map<Vector3i, ItemFrameEntity> itemFrameCache = new Object2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<List<ItemFrameEntity>> itemFramesByChunk = new Long2ObjectOpenHashMap<>();
+
+    public void cacheItemFrame(Vector3i position, ItemFrameEntity itemFrame) {
+        ItemFrameEntity previous = itemFrameCache.put(position, itemFrame);
+        long chunkKey = MathUtils.chunkPositionToLong(position.getX() >> 4, position.getZ() >> 4);
+        if (previous != null) {
+            removeItemFrameFromChunkIndex(chunkKey, previous);
+        }
+
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(chunkKey);
+        if (frames == null) {
+            frames = new ArrayList<>();
+            itemFramesByChunk.put(chunkKey, frames);
+        }
+        frames.add(itemFrame);
+    }
+
+    public void uncacheItemFrame(Vector3i position, ItemFrameEntity itemFrame) {
+        if (itemFrameCache.remove(position, itemFrame)) {
+            long chunkKey = MathUtils.chunkPositionToLong(position.getX() >> 4, position.getZ() >> 4);
+            removeItemFrameFromChunkIndex(chunkKey, itemFrame);
+        }
+    }
+
+    private void removeItemFrameFromChunkIndex(long chunkKey, ItemFrameEntity itemFrame) {
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(chunkKey);
+        if (frames != null) {
+            frames.remove(itemFrame);
+            if (frames.isEmpty()) {
+                itemFramesByChunk.remove(chunkKey);
+            }
+        }
+    }
+
+    public Iterable<ItemFrameEntity> getItemFramesInChunk(int chunkX, int chunkZ) {
+        List<ItemFrameEntity> frames = itemFramesByChunk.get(MathUtils.chunkPositionToLong(chunkX, chunkZ));
+        return frames == null ? Collections.emptyList() : frames;
+    }
+
+    public void clearItemFrameCache() {
+        itemFrameCache.clear();
+        itemFramesByChunk.clear();
+    }
 
     /**
      * A map of all players (and their heads) that are wearing a player head with a custom texture.
@@ -867,6 +918,7 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
         this.chunkCache = new ChunkCache(this);
         this.componentCache = new ComponentCache(this);
         this.entityCache = new EntityCache(this);
+        this.entityCullingManager = new EntityCullingManager(this);
         this.effectCache = new EntityEffectCache();
         this.formCache = new FormCache(this);
         this.inputCache = new InputCache(this);
@@ -1384,6 +1436,8 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
                 it.next().updateBedrockMetadata();
                 it.remove();
             }
+
+            entityCullingManager.tick();
 
             for (Tickable entity : entityCache.getTickableEntities()) {
                 entity.drawTick();
@@ -2109,6 +2163,30 @@ public class GeyserSession implements GeyserConnection, GeyserCommandSource {
      */
     public int getNextItemNetId() {
         return itemNetId.getAndIncrement();
+    }
+
+    /**
+     * Records that we have asked the Java server to let the player sleep. The server moves the
+     * player onto the bed as soon as it accepts, but still measures any movement we forward
+     * against where they stood before. Forwarding anything before the bed metadata arrives
+     * trips the sleeping-movement check and gets the player bounced back out of the bed.
+     */
+    public void startEnteringBed() {
+        // Has to cover a round trip to the Java server. A refused click (wrong time, monsters nearby,
+        // a bed exploding in the Nether) sends no bed metadata back; those answers end the hold early
+        // (see JavaSystemChatTranslator and JavaExplodeTranslator), and this bounds anything else.
+        this.enteringBedUntil = System.currentTimeMillis() + 500L;
+    }
+
+    public void stopEnteringBed() {
+        this.enteringBedUntil = 0L;
+    }
+
+    /**
+     * @return whether a bed click is still waiting on the Java server's answer.
+     */
+    public boolean isEnteringBed() {
+        return System.currentTimeMillis() < this.enteringBedUntil;
     }
 
     public void confirmTeleport(Vector3f position) {

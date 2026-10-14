@@ -26,6 +26,7 @@
 package org.geysermc.geyser.level.chunk;
 
 import io.netty.buffer.ByteBuf;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
 import lombok.Getter;
@@ -39,8 +40,10 @@ import java.util.function.IntConsumer;
 public class BlockStorage {
 
     public static final int SIZE = 4096;
+    private static final int PALETTE_LOOKUP_THRESHOLD = 8;
 
     private final IntList palette;
+    private Int2IntOpenHashMap paletteIndexCache;
     private BitArray bitArray;
 
     public BlockStorage(int airBlockId) {
@@ -56,6 +59,9 @@ public class BlockStorage {
     public BlockStorage(BitArray bitArray, IntList palette) {
         this.palette = palette;
         this.bitArray = bitArray;
+        if (palette.size() >= PALETTE_LOOKUP_THRESHOLD) {
+            buildPaletteIndexCache();
+        }
     }
 
     private static int getPaletteHeader(BitArrayVersion version, boolean runtime) {
@@ -101,14 +107,32 @@ public class BlockStorage {
         this.bitArray = newBitArray;
     }
 
+    private void buildPaletteIndexCache() {
+        Int2IntOpenHashMap cache = new Int2IntOpenHashMap(palette.size());
+        cache.defaultReturnValue(-1);
+        for (int i = 0; i < palette.size(); i++) {
+            int runtimeId = palette.getInt(i);
+            // Match IntList.indexOf: if entries repeat, keep their first index.
+            if (!cache.containsKey(runtimeId)) {
+                cache.put(runtimeId, i);
+            }
+        }
+        paletteIndexCache = cache;
+    }
+
     public int idFor(int runtimeId) { // Set to public so we can reuse the palette ID for biomes
-        int index = this.palette.indexOf(runtimeId);
+        int index = paletteIndexCache == null ? palette.indexOf(runtimeId) : paletteIndexCache.get(runtimeId);
         if (index != -1) {
             return index;
         }
 
         index = this.palette.size();
         this.palette.add(runtimeId);
+        if (paletteIndexCache != null) {
+            paletteIndexCache.put(runtimeId, index);
+        } else if (palette.size() >= PALETTE_LOOKUP_THRESHOLD) {
+            buildPaletteIndexCache();
+        }
         BitArrayVersion version = this.bitArray.getVersion();
         if (index > version.getMaxEntryValue()) {
             BitArrayVersion next = version.next();
