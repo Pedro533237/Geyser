@@ -73,7 +73,6 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.Clien
 import java.io.IOException;
 import java.util.BitSet;
 import java.util.List;
-import java.util.Map;
 
 import static org.geysermc.geyser.util.ChunkUtils.EMPTY_BLOCK_STORAGE;
 import static org.geysermc.geyser.util.ChunkUtils.EMPTY_CHUNK_SECTION_SIZE;
@@ -391,13 +390,9 @@ public class JavaLevelChunkWithLightTranslator extends PacketTranslator<Clientbo
             }
         }
 
-        for (Map.Entry<Vector3i, ItemFrameEntity> entry : session.getItemFrameCache().entrySet()) {
-            Vector3i position = entry.getKey();
-            if ((position.getX() >> 4) == packet.getX() && (position.getZ() >> 4) == packet.getZ()) {
-                // Update this item frame so it doesn't get lost in the abyss
-                //TODO optimize
-                entry.getValue().updateBlock(true);
-            }
+        for (ItemFrameEntity itemFrame : session.getItemFramesInChunk(packet.getX(), packet.getZ())) {
+            // Update frames in this chunk so they are not lost after the chunk resend.
+            itemFrame.updateBlock(true);
         }
     }
 }

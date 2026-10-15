@@ -30,11 +30,23 @@ import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundBlockChangedAckPacket;
 
+import java.util.concurrent.TimeUnit;
+
 @Translator(packet = ClientboundBlockChangedAckPacket.class)
 public class JavaBlockChangedAckTranslator extends PacketTranslator<ClientboundBlockChangedAckPacket> {
 
+    /**
+     * Some servers can acknowledge an interaction before sending the authoritative block update.
+     * Give that update a short window to remove the prediction before rolling the Bedrock block back.
+     */
+    private static final long PREDICTION_RECONCILIATION_DELAY_MILLIS = 150;
+
     @Override
     public void translate(GeyserSession session, ClientboundBlockChangedAckPacket packet) {
-        session.getWorldCache().endPredictionsUpTo(packet.getSequence());
+        session.scheduleInEventLoop(
+            () -> session.getWorldCache().endPredictionsUpTo(packet.getSequence()),
+            PREDICTION_RECONCILIATION_DELAY_MILLIS,
+            TimeUnit.MILLISECONDS
+        );
     }
 }
